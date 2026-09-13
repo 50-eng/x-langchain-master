@@ -1,4 +1,4 @@
-[project]
+I
 name = "x-langchain"
 version = "0.1.0"
 description = "LangChain Learning and Practice Project"
@@ -27,6 +27,13 @@ dependencies = [
     "langchain-mcp-adapters>=0.2.2",
     # Utilities
     "loguru>=0.7.3",
+    # ============新增改造依赖============
+    "fastapi>=0.112.0",
+    "uvicorn>=0.30.0",
+    "pymilvus>=2.4.0",
+    "langchain-milvus>=0.1.0",
+    "sentence-transformers>=3.0.0",
+    "langgraph-checkpoint-sqlite>=0.1.0",
 ]
 
 [project.optional-dependencies]
