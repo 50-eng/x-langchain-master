@@ -3,89 +3,104 @@ import os
 os.environ["HF_ENDPOINT"] = "https://hf-mirror.com"
 os.environ["HF_HUB_DISABLE_SSL_VERIFY"] = "1"
 os.environ["HF_HUB_HTTP_CLIENT"] = "httpx"
-# 针对httpx关闭ssl校验
 import httpx
 httpx._config.DEFAULT_CA_BUNDLE = None
-
 from pathlib import Path
 from langchain_qdrant import QdrantVectorStore
 from qdrant_client import QdrantClient
+from qdrant_client.http.models import VectorParams, Distance
 from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 # ---------------------- 配置区域 ----------------------
 QDRANT_PATH = r"./qdrant_anti_fraud_store"
 COLLECTION_NAME = "campus_anti_fraud"
-# 传入你的普通txt文档路径，后续替换不同电商txt就改这里
-TXT_FILE = r"F:\x-langchain-master\x-langchain-master\economy.txt"
-
-# ========== 修正：cache_folder，修复路径少反斜杠bug ==========
+# bge‑small‑zh‑v1.5 输出向量维度 = 512
 embeddings = HuggingFaceEmbeddings(
     model_name="BAAI/bge-small-zh-v1.5",
     cache_folder=r"F:\x-langchain-master\.venv\hf_cache"
 )
 
-# 全局只初始化一次客户端
-client = QdrantClient(path=QDRANT_PATH)
-
 
 def build_knowledge_base_from_txt(file_path: str):
     """
-    仅传入普通txt文件；force_recreate=True强制drop同名collection，真正覆写旧向量
-    更换不同电商txt调用此函数，会覆盖当前COLLECTION_NAME集合内全部旧数据
+    【模拟前端传入txt文件】
+    传入txt绝对路径，会覆盖原有向量库，重新构建；
+    :param file_path: txt文件完整路径（模拟前端上传后得到的文件路径）
     """
-    raw_text = Path(file_path).read_text(encoding="utf-8")
+    file_p = Path(file_path)
+    if not file_p.exists():
+        raise FileNotFoundError(f"txt文件不存在：{file_path}")
+
+    client = QdrantClient(path=QDRANT_PATH)
+
+    # 存在就删除集合，实现覆盖效果
+    if client.collection_exists(COLLECTION_NAME):
+        client.delete_collection(COLLECTION_NAME)
+
+    # 手动新建集合
+    client.create_collection(
+        collection_name=COLLECTION_NAME,
+        vectors_config=VectorParams(
+            size=512,
+            distance=Distance.COSINE
+        )
+    )
+
+    raw_text = file_p.read_text(encoding="utf-8")
     splitter = RecursiveCharacterTextSplitter(
-        chunk_size=512,
-        chunk_overlap=80,
-        separators=["\n\n", "\n", "。", "，"]
+        chunk_size=600,
+        chunk_overlap=100,
+        separators=["\n\n", "\n", "Q：", "A：", "。"]
     )
     chunks = splitter.split_text(raw_text)
 
-    vector_store = QdrantVectorStore.from_texts(
-        texts=chunks,
-        embedding=embeddings,
-        path=QDRANT_PATH,
-        collection_name=COLLECTION_NAME,
-        force_recreate=True   # 关键：强制删除同名集合，重建覆盖
-    )
-    print(f"✅Qdrant磁盘向量库(txt)构建完成，切片总数：{len(chunks)}")
-    return vector_store
-
-
-def get_vector_store():
-    """读取磁盘上已经建好的Qdrant向量库"""
     vector_store = QdrantVectorStore(
         client=client,
         collection_name=COLLECTION_NAME,
         embedding=embeddings
     )
-    return vector_store
+    vector_store.add_texts(chunks)
+
+    print(f"✅向量库已覆盖重建 | 文件:{file_p.name} | 切片总数：{len(chunks)}")
+    client.close()
+    return True
 
 
 def search_knowledge(query: str, top_k: int = 3) -> str:
-    """RAG检索接口，返回相关文档文本"""
-    vector_store = get_vector_store()
+    """查询知识库"""
+    client = QdrantClient(path=QDRANT_PATH)
+    vector_store = QdrantVectorStore(
+        client=client,
+        collection_name=COLLECTION_NAME,
+        embedding=embeddings
+    )
     retriever = vector_store.as_retriever(search_kwargs={"k": top_k})
     docs = retriever.invoke(query)
-    return "\n\n".join([doc.page_content for doc in docs])
+    content = "\n\n".join([doc.page_content for doc in docs])
+    client.close()
+    return content
 
 
 if __name__ == "__main__":
-    # ==========【首次构建txt向量库：取消下面注释运行1次，构建完务必注释！！】==========
-    # build_knowledge_base_from_txt(TXT_FILE)
+    # ======================测试示例======================
+    # 场景1：加载 economy.txt（原来的文档）
+    print("=====测试1：加载 economy.txt =====")
+    txt1 = r"F:\x-langchain-master\x-langchain-master\economy.txt"
+    build_knowledge_base_from_txt(txt1)
+    res1 = search_knowledge("经济相关问题")
+    print("检索结果：\n", res1, "\n")
 
-    # 测试检索，替换成你自己的问题
-    test_queries = [
-        "七天无理由退货商品完好是什么标准？",
-        "退货可以寄到付件吗？",
-        "商品有质量问题超过7天还能售后吗？"
-    ]
-    for q in test_queries:
-        print("=" * 60)
-        print(f"用户查询：{q}")
-        res = search_knowledge(q, top_k=3)
-        print(f"检索返回：\n{res}")
+    # # 场景2：模拟前端传入另外一份纯文本 student.txt（自己新建这个txt）
+    # print("=====测试2：覆盖加载 student.txt =====")
+    # txt2 = r"F:\x-langchain-master\x-langchain-master\student.txt"
+    # build_knowledge_base_from_txt(txt2)
+    # res2 = search_knowledge("学生相关问题")
+    # print("检索结果：\n", res2, "\n")
 
-    # 关闭客户端，消除退出析构警告
-    client.close()
+    # # 场景3：模拟前端传入 fraud.txt，再次覆盖向量库
+    # print("=====测试3：覆盖加载 fraud.txt =====")
+    # txt3 = r"F:\x-langchain-master\x-langchain-master\anti‑fraud.txt"
+    # build_knowledge_base_from_txt(txt3)
+    # res3 = search_knowledge("诈骗相关问题")
+    # print("检索结果：\n", res3)
